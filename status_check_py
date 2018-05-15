@@ -1,0 +1,137 @@
+import boto3
+import socket
+import datetime
+from crontab import CronTab
+
+ec2client = boto3.client(
+    'ec2',
+    aws_access_key_id="1111111111111111111",
+    aws_secret_access_key="1111111111111111",
+    region_name='1111111'
+)
+
+# Private DNS of Current Instance
+currentprdns = '_IP_'
+# Private DNS of Instance where we should connect
+connectprdns = '_IP_'
+
+# current Elastic IP
+eipaddr = '_EIP_'
+
+# write "logs" in file
+file = open('log', 'a')
+
+# Instance where we should connect
+connectresponse = ec2client.describe_instances(
+    Filters=[
+        {
+            'Name': 'private-dns-name',
+            'Values': [
+                connectprdns,
+            ]
+        },
+    ],
+
+)
+
+for i in range(len(connectresponse['Reservations'])):
+    data = connectresponse['Reservations'][i]['Instances'][0]
+    connectipaddr = data.get('PublicIpAddress')
+    file.write('Connect to:' + "\n")
+    file.write('Destination PublicIpAddress:')
+    file.write(connectipaddr + "\n")
+    connectinstid = data.get('InstanceId')
+    file.write('Destination InstanceId:')
+    file.write(connectinstid + "\n")
+
+    # execution time
+    now = datetime.datetime.now()
+    file.write(now.strftime("%Y-%m-%d %H:%M") + "\n")
+
+    sock1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock1.settimeout(5)
+    result1 = sock1.connect_ex((connectipaddr, 22))
+    if result1 == 0:
+        file.write('Port 22 is open' + "\n")
+        check1 = 0
+    else:
+        file.write('Port 22 is not open' + "\n")
+        check1 = 1
+    sock1.close()
+
+    sock2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock2.settimeout(5)
+    result2 = sock2.connect_ex((connectipaddr, 80))
+
+    if result2 == 0:
+        file.write('Port 80 is open' + "\n")
+        check2 = 0
+    else:
+        file.write('Port 80 is not open' + "\n")
+        check2 = 1
+    sock2.close()
+
+    if check1 + check2 == 2:
+        file.write('down' + "\n")
+
+        # Current Instance
+        currentresponse = ec2client.describe_instances(
+            Filters=[
+                {
+                    'Name': 'private-dns-name',
+                    'Values': [
+                        currentprdns,
+                    ]
+                },
+            ],
+        )
+        for a in range(len(currentresponse['Reservations'])):
+            data = currentresponse['Reservations'][a]['Instances'][0]
+            currentipaddr = data.get('PublicIpAddress')
+            currentinstid = data.get('InstanceId')
+            file.write('Current InstanceId:')
+            file.write(currentinstid + "\n")
+
+            # compare current Elastic IP with IP of current server
+            if currentipaddr != eipaddr:
+                file.write('assign EIP: ')
+                file.write(eipaddr)
+                file.write(' to this instance: ')
+                file.write(currentinstid + "\n")
+
+                # get allocation ID of Elastic IP
+                responseEIP = ec2client.describe_addresses(
+                    Filters=[
+                        {
+                            'Name': 'public-ip',
+                            'Values': [
+                                eipaddr,
+                            ]
+                        },
+                    ],
+
+                )
+                for b in responseEIP['Addresses']:
+                    allID = b['AllocationId']
+                    file.write('AllocationId: ')
+                    file.write(allID + "\n")
+
+                    # assosiate Elastic IP with current server
+                    response1 = ec2client.associate_address(AllocationId=allID,InstanceId=currentinstid)
+                    file.write('Done' + "\n")
+
+                #stop instance
+                response = ec2client.stop_instances(InstanceIds=[connectinstid])
+            else:
+                file.write('Instance ID ')
+                file.write(currentinstid)
+                file.write(' already use ')
+                file.write(eipaddr + "\n")
+            # disable cron
+            my_cron = CronTab(user='ubuntu')
+            my_cron.remove_all(comment='checkstatus')
+            my_cron.write()
+    else:
+        file.write('up' + "\n")
+
+file.close()
